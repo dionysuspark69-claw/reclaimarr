@@ -1,26 +1,79 @@
 # Reclaimarr
 
-A Python CLI tool to automatically manage disk space by intelligently deleting media from a Jellyfin media stack based on watch history, age, and usage patterns.
+A Python CLI tool to automatically manage disk space by intelligently deleting media from a Plex media stack based on watch history, age, and usage patterns.
 
 ## Features
 
 - **Intelligent Deletion:** Prioritizes media for deletion based on watch history (never watched, last watched date).
-- **Multi-API Integration:** Fetches data from Jellyfin, Jellystat, Jellyseerr, Radarr, and Sonarr for a holistic view of your media.
+- **Multi-API Integration:** Fetches data from Plex, Tautulli, Radarr, and Sonarr for a holistic view of your media.
 - **Disk Space Management:** Automatically deletes media to keep disk usage below a configurable target percentage.
 - **Safety First:** Includes a `DRY_RUN` mode to preview deletions without affecting your files.
 - **Configurable:** Easily configure API endpoints, keys, and deletion thresholds via a `.env` file.
 - **Dockerized:** Comes with a `Dockerfile` and `docker-compose.yml` for easy, containerized deployment.
 
-## Prerequisites
+## Quick Start (Self-Hosting)
+
+### Prerequisites
 
 - Python 3.12+
-- Docker (for containerized deployment)
-- Access to a Jellyfin media stack with the following services:
-  - Jellyfin
-  - Jellystat
-  - Jellyseerr
-  - Radarr
-  - Sonarr
+- Docker and Docker Compose (for containerized deployment)
+- Running instances of:
+  - [Plex Media Server](https://www.plex.tv/)
+  - [Tautulli](https://tautulli.com/) (for watch history tracking)
+  - [Radarr](https://radarr.video/) (for movie management)
+  - [Sonarr](https://sonarr.tv/) (for TV series management)
+
+### Step 1: Clone the Repository
+
+```bash
+git clone https://github.com/okhr/reclaimarr.git
+cd reclaimarr
+```
+
+### Step 2: Run the Setup Wizard
+
+The setup wizard will prompt you for each service's URL and API key, validate the connections, and generate a `.env` file.
+
+```bash
+pip install requests
+python setup.py
+```
+
+**Where to find your API keys:**
+
+| Service | Location |
+|---------|----------|
+| Plex | [Finding your token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/) |
+| Tautulli | Settings > Web Interface > API > API Key |
+| Radarr | Settings > General > API Key |
+| Sonarr | Settings > General > API Key |
+
+### Step 3: Deploy with Docker
+
+```bash
+docker-compose up -d
+```
+
+> **Note:** Edit `docker-compose.yml` to adjust the volume mount (`/srv/media:/media`) to match your media library's location on the host. The `docker-compose.yml` uses Docker-internal hostnames for service URLs (e.g., `http://plex:32400`). Your `.env` file provides the API keys via variable substitution. If running without Docker, the URLs in `.env` are used directly.
+
+### Step 4: Verify with a Dry Run
+
+```bash
+docker-compose logs -f reclaimarr
+```
+
+By default, `DRY_RUN=true` so no files will be deleted. Review the logs to confirm Reclaimarr connects to all services and identifies media correctly. When satisfied, set `DRY_RUN=false` in your `.env` file and restart:
+
+```bash
+docker-compose restart reclaimarr
+```
+
+### Running Without Docker
+
+```bash
+pip install -r requirements.txt
+python -m src.main
+```
 
 ## Deployment
 
@@ -41,12 +94,10 @@ services:
     environment:
       # --- Required API Settings ---
       # Assumes you are running Reclaimarr in the same Docker network as your other services.
-      - JELLYFIN_URL=http://jellyfin:8096
-      - JELLYFIN_API_KEY=${JELLYFIN_API_KEY} # Replace with your actual key or variable
-      - JELLYSTAT_URL=http://jellystat:3000
-      - JELLYSTAT_API_KEY=${JELLYSTAT_API_KEY}
-      - JELLYSEERR_URL=http://jellyseerr:5055
-      - JELLYSEERR_API_KEY=${JELLYSEERR_API_KEY}
+      - PLEX_URL=http://plex:32400
+      - PLEX_TOKEN=${PLEX_TOKEN}
+      - TAUTULLI_URL=http://tautulli:8181
+      - TAUTULLI_API_KEY=${TAUTULLI_API_KEY}
       - RADARR_URL=http://radarr:7878
       - RADARR_API_KEY=${RADARR_API_KEY}
       - SONARR_URL=http://sonarr:8989
@@ -73,7 +124,7 @@ The `restart: on-failure` policy is used to ensure the container behaves correct
 - **With `CRON_SCHEDULE`:** The container runs continuously as a service. If it ever crashes, Docker will restart it.
 - **Without `CRON_SCHEDULE`:** The script runs once and exits cleanly. The `on-failure` policy ensures Docker will **not** restart it, allowing it to act as a one-off task.
 
-To start the service, create a `.env` file for your secrets and run:
+To start the service, create a `.env` file for your secrets (or run `python setup.py`) and run:
 ```bash
 docker-compose up -d
 ```
@@ -101,21 +152,17 @@ The script will delete items from this prioritized list one by one until the dis
 
 ## Configuration
 
-All configuration is handled via the `.env` file. Copy the `.env.example` to `.env` and fill in the values for your environment.
+All configuration is handled via the `.env` file. You can either run `python setup.py` for interactive setup, or copy `.env.example` to `.env` and fill in the values manually.
 
 ### Required API Settings
 ```
-# Jellyfin
-JELLYFIN_URL=http://your-jellyfin-url:8096
-JELLYFIN_API_KEY=your-jellyfin-api-key
+# Plex
+PLEX_URL=http://your-plex-url:32400
+PLEX_TOKEN=your-plex-token
 
-# Jellystat
-JELLYSTAT_URL=http://your-jellystat-url:3791
-JELLYSTAT_API_KEY=your-jellystat-api-key
-
-# Jellyseerr
-JELLYSEERR_URL=http://your-jellyseerr-url:5055
-JELLYSEERR_API_KEY=your-jellyseerr-api-key
+# Tautulli
+TAUTULLI_URL=http://your-tautulli-url:8181
+TAUTULLI_API_KEY=your-tautulli-api-key
 
 # Radarr
 RADARR_URL=http://your-radarr-url:7878
@@ -140,3 +187,4 @@ DRY_RUN=true
 VERBOSE=false
 # A cron-style string to schedule runs (e.g., "0 3 * * *"). If blank, runs once.
 CRON_SCHEDULE="0 3 * * *"
+```

@@ -8,17 +8,12 @@ class Media:
     """
     Base class for a media item in the library.
     """
-    jellyfin_id: str
+    plex_rating_key: str
     title: str
     added_date: datetime | None
     file_size: int  # In bytes
 
-    # Data from Jellyseerr
-    request_id: str | None = None
-    requester_name: str | None = None
-    requester_id: str | None = None
-
-    # Playback data from Jellystat
+    # Playback data from Tautulli
     playbacks: list[Playback] = field(default_factory=list)
 
     # Calculated fields
@@ -108,7 +103,7 @@ if __name__ == '__main__':
     ]
 
     test_movie = Movie(
-        jellyfin_id="movie1",
+        plex_rating_key="movie1",
         title="Test Movie",
         added_date=datetime(2023, 1, 1),
         file_size=4 * 1024**3,  # 4 GB
@@ -131,7 +126,7 @@ if __name__ == '__main__':
     ]
 
     test_show = TVShow(
-        jellyfin_id="show1",
+        plex_rating_key="show1",
         title="Test Show",
         added_date=datetime(2022, 9, 1),
         file_size=20 * 1024**3,  # 20 GB

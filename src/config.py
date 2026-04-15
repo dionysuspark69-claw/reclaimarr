@@ -20,17 +20,13 @@ def get_env_variable(var_name: str, default: str | None = None) -> str:
     return value
 
 
-# --- Jellyfin Configuration ---
-JELLYFIN_URL = get_env_variable("JELLYFIN_URL")
-JELLYFIN_API_KEY = get_env_variable("JELLYFIN_API_KEY")
+# --- Plex Configuration ---
+PLEX_URL = get_env_variable("PLEX_URL")
+PLEX_TOKEN = get_env_variable("PLEX_TOKEN")
 
-# --- Jellystat Configuration ---
-JELLYSTAT_URL = get_env_variable("JELLYSTAT_URL")
-JELLYSTAT_API_KEY = get_env_variable("JELLYSTAT_API_KEY")
-
-# --- Jellyseerr Configuration ---
-JELLYSEERR_URL = get_env_variable("JELLYSEERR_URL")
-JELLYSEERR_API_KEY = get_env_variable("JELLYSEERR_API_KEY")
+# --- Tautulli Configuration ---
+TAUTULLI_URL = get_env_variable("TAUTULLI_URL")
+TAUTULLI_API_KEY = get_env_variable("TAUTULLI_API_KEY")
 
 # --- Radarr Configuration ---
 RADARR_URL = get_env_variable("RADARR_URL")
@@ -58,9 +54,8 @@ CRON_SCHEDULE = get_env_variable("CRON_SCHEDULE", None)
 if __name__ == '__main__':
     # A simple check to print the loaded configuration for verification
     print("--- Configuration Loaded ---")
-    print(f"JELLYFIN_URL: {JELLYFIN_URL}")
-    print(f"JELLYSTAT_URL: {JELLYSTAT_URL}")
-    print(f"JELLYSEERR_URL: {JELLYSEERR_URL}")
+    print(f"PLEX_URL: {PLEX_URL}")
+    print(f"TAUTULLI_URL: {TAUTULLI_URL}")
     print(f"RADARR_URL: {RADARR_URL}")
     print(f"SONARR_URL: {SONARR_URL}")
     print(f"MEDIA_PATH: {MEDIA_PATH or 'Not Set'}")
