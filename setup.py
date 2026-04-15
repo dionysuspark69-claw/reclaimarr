@@ -3,11 +3,14 @@
 Reclaimarr Interactive Setup Wizard
 
 Prompts for API credentials, validates connections, and generates a .env file.
+Automatically discovers credentials from locally installed services when possible.
 """
 
+import configparser
 import os
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 try:
@@ -80,13 +83,116 @@ DELETION_DEFAULTS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Auto-discovery
+# ---------------------------------------------------------------------------
+
+def _expand(path: str) -> Path:
+    """Expand Windows environment variables and return a Path."""
+    return Path(os.path.expandvars(path))
+
+
+def _read_arr_config(candidate_paths: list[str]) -> dict[str, str]:
+    """
+    Try to read API key and port from an *Arr config.xml.
+    Returns {"api_key": "...", "port": "..."} or {}.
+    """
+    for path_str in candidate_paths:
+        config_path = _expand(path_str)
+        if not config_path.is_file():
+            continue
+        try:
+            root = ET.parse(config_path).getroot()
+            api_key = root.findtext("ApiKey") or ""
+            port = root.findtext("Port") or ""
+            if api_key:
+                return {"api_key": api_key, "port": port}
+        except Exception:
+            continue
+    return {}
+
+
+def _discover_radarr() -> dict[str, str]:
+    return _read_arr_config([
+        r"%APPDATA%\Radarr\config.xml",
+        r"%ProgramData%\Radarr\config.xml",
+    ])
+
+
+def _discover_sonarr() -> dict[str, str]:
+    return _read_arr_config([
+        r"%APPDATA%\Sonarr\config.xml",
+        r"%APPDATA%\Roaming\Sonarr\config.xml",
+        r"%ProgramData%\Sonarr\config.xml",
+    ])
+
+
+def _discover_tautulli() -> dict[str, str]:
+    candidates = [
+        r"%APPDATA%\Tautulli\config.ini",
+        r"%ProgramData%\Tautulli\config.ini",
+    ]
+    for path_str in candidates:
+        config_path = _expand(path_str)
+        if not config_path.is_file():
+            continue
+        try:
+            cp = configparser.ConfigParser()
+            cp.read(config_path, encoding="utf-8")
+            api_key = cp.get("General", "api_key", fallback="").strip()
+            port = cp.get("General", "http_port", fallback="8181").strip()
+            if api_key:
+                return {"api_key": api_key, "port": port}
+        except Exception:
+            continue
+    return {}
+
+
+def _discover_plex() -> dict[str, str]:
+    pref_path = _expand(r"%LOCALAPPDATA%\Plex Media Server\Preferences.xml")
+    if not pref_path.is_file():
+        return {}
+    try:
+        root = ET.parse(pref_path).getroot()
+        token = root.get("PlexOnlineToken", "").strip()
+        if token:
+            return {"api_key": token}
+    except Exception:
+        pass
+    return {}
+
+
+def discover_all() -> dict[str, dict[str, str]]:
+    """
+    Scan local config files and return discovered credentials per service.
+    Keys in each dict: "api_key" and optionally "port".
+    """
+    return {
+        "Plex": _discover_plex(),
+        "Tautulli": _discover_tautulli(),
+        "Radarr": _discover_radarr(),
+        "Sonarr": _discover_sonarr(),
+    }
+
+
+def _build_url(default_url: str, discovered_port: str) -> str:
+    """Replace the port in a default URL with a discovered port."""
+    if not discovered_port:
+        return default_url
+    # Strip trailing port from default and append discovered port
+    parts = default_url.rsplit(":", 1)
+    if len(parts) == 2:
+        return f"{parts[0]}:{discovered_port}"
+    return default_url
+
+
+# ---------------------------------------------------------------------------
+# Prompting helpers
+# ---------------------------------------------------------------------------
+
 def prompt(message: str, default: str | None = None) -> str:
     """Prompt the user for input with an optional default."""
-    if default:
-        display = f"{message} [{default}]: "
-    else:
-        display = f"{message}: "
-
+    display = f"{message} [{default}]: " if default else f"{message}: "
     value = input(display).strip()
     if not value and default is not None:
         return default
@@ -102,16 +208,23 @@ def prompt_yes_no(message: str, default: bool = True) -> bool:
     return value in ("y", "yes")
 
 
+def mask_key(key: str) -> str:
+    """Mask an API key, showing only the last 4 characters."""
+    if not key or len(key) <= 4:
+        return "****"
+    return "*" * (len(key) - 4) + key[-4:]
+
+
+# ---------------------------------------------------------------------------
+# Connection validation
+# ---------------------------------------------------------------------------
+
 def validate_connection(url: str, api_key: str, service: dict) -> tuple[bool, str]:
     """
     Validate a connection to a service by hitting its validation endpoint.
-
-    Returns:
-        tuple of (success, message)
+    Returns (success, message).
     """
-    endpoint = service["validate_endpoint"]
-    full_url = url.rstrip("/") + endpoint
-
+    full_url = url.rstrip("/") + service["validate_endpoint"]
     headers = {"Accept": "application/json"}
     params = {}
 
@@ -120,8 +233,7 @@ def validate_connection(url: str, api_key: str, service: dict) -> tuple[bool, st
     elif service["auth_mode"] == "query":
         params[service["auth_query_param"]] = api_key
 
-    extra_params = service.get("validate_extra_params", {})
-    params.update(extra_params)
+    params.update(service.get("validate_extra_params", {}))
 
     try:
         response = requests.get(full_url, headers=headers, params=params, timeout=10)
@@ -137,16 +249,35 @@ def validate_connection(url: str, api_key: str, service: dict) -> tuple[bool, st
         return False, str(e)
 
 
-def prompt_service(service: dict) -> dict[str, str]:
-    """Prompt for a service's URL and API key, with optional validation."""
+# ---------------------------------------------------------------------------
+# Service prompting
+# ---------------------------------------------------------------------------
+
+def prompt_service(service: dict, discovered: dict[str, str] | None = None) -> dict[str, str]:
+    """
+    Prompt for a service's URL and API key.
+    If discovered credentials are provided, they are pre-filled as defaults.
+    """
+    disc = discovered or {}
+    discovered_key = disc.get("api_key", "")
+    discovered_port = disc.get("port", "")
+    default_url = _build_url(service["default_url"], discovered_port)
+
     print(f"\n--- {service['name']} ---")
-    if service.get("help"):
+    if discovered_key:
+        print(f"  Auto-discovered {service['key_label']}: {mask_key(discovered_key)}")
+    elif service.get("help"):
         print(f"  {service['help']}")
 
     while True:
-        url = prompt(f"  {service['name']} URL", service["default_url"])
-        url = url.rstrip("/")
-        key = prompt(f"  {service['key_label']}")
+        url = prompt(f"  {service['name']} URL", default_url).rstrip("/")
+
+        # Key prompt: show masked discovered key as default
+        if discovered_key:
+            raw = input(f"  {service['key_label']} [{mask_key(discovered_key)}]: ").strip()
+            key = raw if raw else discovered_key
+        else:
+            key = prompt(f"  {service['key_label']}")
 
         if not key:
             print(f"  Warning: No key provided for {service['name']}.")
@@ -172,10 +303,13 @@ def prompt_service(service: dict) -> dict[str, str]:
             # else retry (loop continues)
 
 
+# ---------------------------------------------------------------------------
+# Deletion settings
+# ---------------------------------------------------------------------------
+
 def prompt_deletion_settings() -> dict[str, str]:
     """Prompt for deletion and scheduler settings."""
     print("\n--- Deletion Settings ---")
-
     config = {}
 
     target = prompt("  Target disk usage % (1-99)", DELETION_DEFAULTS["TARGET_USAGE"])
@@ -198,10 +332,8 @@ def prompt_deletion_settings() -> dict[str, str]:
         min_age = DELETION_DEFAULTS["MIN_AGE_DAYS"]
     config["MIN_AGE_DAYS"] = min_age
 
-    media_path = prompt("  Media library path (e.g., D:\\Media)", DELETION_DEFAULTS["MEDIA_PATH"])
-    if not media_path:
-        media_path = DELETION_DEFAULTS["MEDIA_PATH"]
-    config["MEDIA_PATH"] = media_path
+    media_path = prompt(r"  Media library path (e.g., D:\Media)", DELETION_DEFAULTS["MEDIA_PATH"])
+    config["MEDIA_PATH"] = media_path or DELETION_DEFAULTS["MEDIA_PATH"]
 
     dry_run = prompt("  Dry run mode (true/false)", DELETION_DEFAULTS["DRY_RUN"]).lower()
     if dry_run not in ("true", "false", "yes", "no"):
@@ -219,6 +351,10 @@ def prompt_deletion_settings() -> dict[str, str]:
 
     return config
 
+
+# ---------------------------------------------------------------------------
+# .env writing
+# ---------------------------------------------------------------------------
 
 def write_env_file(config: dict[str, str]):
     """Write the .env file atomically."""
@@ -242,7 +378,7 @@ def write_env_file(config: dict[str, str]):
         "# --- Deletion Settings ---",
         f"TARGET_USAGE={config.get('TARGET_USAGE', '80')}",
         f"MIN_AGE_DAYS={config.get('MIN_AGE_DAYS', '90')}",
-        f"MEDIA_PATH={config.get('MEDIA_PATH', r'D:\\Media')}",
+        f"MEDIA_PATH={config.get('MEDIA_PATH', r'D:\Media')}",
         f"DRY_RUN={config.get('DRY_RUN', 'true')}",
         f"VERBOSE={config.get('VERBOSE', 'false')}",
         "",
@@ -252,14 +388,12 @@ def write_env_file(config: dict[str, str]):
 
     content = "\n".join(lines) + "\n"
 
-    # Atomic write: write to temp file then rename
     fd, tmp_path = tempfile.mkstemp(dir=SCRIPT_DIR, prefix=".env.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", newline="\n") as f:
             f.write(content)
         os.replace(tmp_path, ENV_FILE)
     except Exception:
-        # Clean up temp file on failure
         try:
             os.unlink(tmp_path)
         except OSError:
@@ -269,12 +403,9 @@ def write_env_file(config: dict[str, str]):
     print(f"\n.env file written to: {ENV_FILE}")
 
 
-def mask_key(key: str) -> str:
-    """Mask an API key, showing only the last 4 characters."""
-    if not key or len(key) <= 4:
-        return "****"
-    return "*" * (len(key) - 4) + key[-4:]
-
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
 
 def print_summary(config: dict[str, str]):
     """Print a summary of the configuration."""
@@ -292,7 +423,7 @@ def print_summary(config: dict[str, str]):
     print("\n  Deletion Settings:")
     print(f"    Target Usage:  {config.get('TARGET_USAGE', '80')}%")
     print(f"    Min Age:       {config.get('MIN_AGE_DAYS', '90')} days")
-    print(f"    Media Path:    {config.get('MEDIA_PATH', '/media')}")
+    print(f"    Media Path:    {config.get('MEDIA_PATH', r'D:\Media')}")
     print(f"    Dry Run:       {config.get('DRY_RUN', 'true')}")
     print(f"    Verbose:       {config.get('VERBOSE', 'false')}")
     print(f"    Cron Schedule: {config.get('CRON_SCHEDULE', '')}")
@@ -309,6 +440,10 @@ def print_summary(config: dict[str, str]):
     print("=" * 50)
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main():
     print("=" * 50)
     print("  Reclaimarr Setup Wizard")
@@ -322,10 +457,20 @@ def main():
             print("Setup cancelled. Your existing .env was not modified.")
             return
 
+    # Auto-discover credentials from local installs
+    print("\nScanning for locally installed services...")
+    discovered = discover_all()
+    found = [name for name, data in discovered.items() if data]
+    if found:
+        print(f"  Found config for: {', '.join(found)}")
+        print("  Keys will be pre-filled — just press Enter to accept.")
+    else:
+        print("  No local configs found. You'll need to enter keys manually.")
+
     # Collect service credentials
     config = {}
     for service in SERVICES:
-        result = prompt_service(service)
+        result = prompt_service(service, discovered.get(service["name"]))
         config.update(result)
 
     # Collect deletion settings
