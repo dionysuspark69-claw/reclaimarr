@@ -18,5 +18,5 @@ dist/
 # Debugging output
 all_media.json
 
-# Conda environment files
-*.yml.lock
+# Temporary files
+*.tmp

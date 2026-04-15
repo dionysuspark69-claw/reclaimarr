@@ -73,7 +73,7 @@ SERVICES = [
 DELETION_DEFAULTS = {
     "TARGET_USAGE": "80",
     "MIN_AGE_DAYS": "90",
-    "MEDIA_PATH": "/media",
+    "MEDIA_PATH": r"D:\Media",
     "DRY_RUN": "true",
     "VERBOSE": "false",
     "CRON_SCHEDULE": "0 3 * * *",
@@ -198,7 +198,7 @@ def prompt_deletion_settings() -> dict[str, str]:
         min_age = DELETION_DEFAULTS["MIN_AGE_DAYS"]
     config["MIN_AGE_DAYS"] = min_age
 
-    media_path = prompt("  Media library path (inside container)", DELETION_DEFAULTS["MEDIA_PATH"])
+    media_path = prompt("  Media library path (e.g., D:\\Media)", DELETION_DEFAULTS["MEDIA_PATH"])
     if not media_path:
         media_path = DELETION_DEFAULTS["MEDIA_PATH"]
     config["MEDIA_PATH"] = media_path
@@ -242,7 +242,7 @@ def write_env_file(config: dict[str, str]):
         "# --- Deletion Settings ---",
         f"TARGET_USAGE={config.get('TARGET_USAGE', '80')}",
         f"MIN_AGE_DAYS={config.get('MIN_AGE_DAYS', '90')}",
-        f"MEDIA_PATH={config.get('MEDIA_PATH', '/media')}",
+        f"MEDIA_PATH={config.get('MEDIA_PATH', r'D:\\Media')}",
         f"DRY_RUN={config.get('DRY_RUN', 'true')}",
         f"VERBOSE={config.get('VERBOSE', 'false')}",
         "",
@@ -298,13 +298,11 @@ def print_summary(config: dict[str, str]):
     print(f"    Cron Schedule: {config.get('CRON_SCHEDULE', '')}")
 
     print("\n  Next Steps:")
-    print("    1. Start with Docker:")
-    print("       docker-compose up -d")
-    print("    2. View logs:")
-    print("       docker-compose logs -f reclaimarr")
-    print("    3. Or run without Docker:")
+    print("    1. Install dependencies:")
     print("       pip install -r requirements.txt")
+    print("    2. Do a dry run first:")
     print("       python -m src.main")
+    print("    3. When satisfied, set DRY_RUN=false in .env and run again.")
     print(f"\n  DRY_RUN is {'enabled' if config.get('DRY_RUN') == 'true' else 'DISABLED'}.")
     if config.get("DRY_RUN") == "true":
         print("  No files will be deleted until you set DRY_RUN=false in .env.")
