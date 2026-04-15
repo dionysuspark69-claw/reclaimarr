@@ -5,13 +5,13 @@ from datetime import datetime
 @dataclass
 class Playback:
     """
-    Represents a single playback event from Jellystat.
+    Represents a single playback event from Tautulli.
     """
     playback_date: datetime
     duration: float  # Minutes watched
     user_id: str
     user_name: str
-    item_id: str  # Jellyfin item ID
+    item_id: str  # Plex rating key
 
     def __repr__(self) -> str:
         """
