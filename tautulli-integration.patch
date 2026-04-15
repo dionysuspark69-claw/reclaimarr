@@ -1,0 +1,376 @@
+diff --git a/backend/core/service_bootstrap.py b/backend/core/service_bootstrap.py
+index 696742a..b81bdfc 100644
+--- a/backend/core/service_bootstrap.py
++++ b/backend/core/service_bootstrap.py
+@@ -45,3 +45,5 @@ async def load_enabled_services() -> None:
+             await service_manager.initialize_sonarr(config.base_url, api_key)
+         elif config.service_type is Service.SEERR:
+             await service_manager.initialize_seerr(config.base_url, api_key)
++        elif config.service_type is Service.TAUTULLI:
++            await service_manager.initialize_tautulli(config.base_url, api_key)
+diff --git a/backend/core/service_manager.py b/backend/core/service_manager.py
+index 70b8940..ee756aa 100644
+--- a/backend/core/service_manager.py
++++ b/backend/core/service_manager.py
+@@ -10,6 +10,7 @@ from backend.services.plex import PlexService
+ from backend.services.radarr import RadarrClient
+ from backend.services.seerr import SeerrClient
+ from backend.services.sonarr import SonarrClient
++from backend.services.tautulli import TautulliClient
+ 
+ 
+ class ServiceManager:
+@@ -27,6 +28,7 @@ class ServiceManager:
+         self._radarr: RadarrClient | None = None
+         self._sonarr: SonarrClient | None = None
+         self._seerr: SeerrClient | None = None
++        self._tautulli: TautulliClient | None = None
+ 
+         LOG.info("ServiceManager initialized")
+ 
+@@ -65,6 +67,11 @@ class ServiceManager:
+         """Get Seerr service (must be initialized first)."""
+         return self._seerr
+ 
++    @property
++    def tautulli(self) -> TautulliClient | None:
++        """Get Tautulli service (must be initialized first)."""
++        return self._tautulli
++
+     async def get_status(self) -> dict[str, bool]:
+         """Get connection status of all clients."""
+         return {
+@@ -73,6 +80,7 @@ class ServiceManager:
+             "radarr": self._radarr is not None,
+             "sonarr": self._sonarr is not None,
+             "seerr": self._seerr is not None,
++            "tautulli": self._tautulli is not None,
+         }
+ 
+     async def test_service(
+@@ -90,6 +98,8 @@ class ServiceManager:
+                 return await SonarrClient.test_service(url, api_key), ""
+             elif service_type is Service.SEERR:
+                 return await SeerrClient.test_service(url, api_key), ""
++            elif service_type is Service.TAUTULLI:
++                return await TautulliClient.test_service(url, api_key), ""
+         except niq_exceptions.ConnectionError:
+             return (
+                 False,
+@@ -112,7 +122,7 @@ class ServiceManager:
+     async def return_service(
+         self, service_type: Service
+     ) -> (
+-        JellyfinService | PlexService | RadarrClient | SonarrClient | SeerrClient | None
++        JellyfinService | PlexService | RadarrClient | SonarrClient | SeerrClient | TautulliClient | None
+     ):
+         """Return the requested service instance."""
+         if service_type is Service.JELLYFIN:
+@@ -125,6 +135,8 @@ class ServiceManager:
+             return self._sonarr
+         elif service_type is Service.SEERR:
+             return self._seerr
++        elif service_type is Service.TAUTULLI:
++            return self._tautulli
+ 
+     async def initialize_jellyfin(
+         self, base_url: str, api_key: str, is_main: bool
+@@ -218,6 +230,24 @@ class ServiceManager:
+             LOG.error(f"Failed to initialize Seerr service: {e}")
+             return None
+ 
++    async def initialize_tautulli(
++        self, base_url: str, api_key: str
++    ) -> TautulliClient | None:
++        """Initialize Tautulli service with provided config."""
++        try:
++            self._tautulli = TautulliClient(
++                api_key=api_key,
++                base_url=base_url,
++            )
++            if not await self._tautulli.health():
++                LOG.error(f"Tautulli service health check failed: {base_url}")
++                raise ValueError(f"Tautulli service health check failed: {base_url}")
++            LOG.info(f"Tautulli service initialized: {base_url}")
++            return self._tautulli
++        except Exception as e:
++            LOG.error(f"Failed to initialize Tautulli service: {e}")
++            return None
++
+     async def clear_jellyfin(self) -> None:
+         """Clear Jellyfin service (call before reinitializing)."""
+         if self._main_media_server is self._jellyfin:
+@@ -257,6 +287,13 @@ class ServiceManager:
+             LOG.info("Seerr service cleared")
+         self._seerr = None
+ 
++    async def clear_tautulli(self) -> None:
++        """Clear Tautulli service (call before reinitializing)."""
++        if self._tautulli and self._tautulli.session:
++            await self._tautulli.session.close()
++            LOG.info("Tautulli service cleared")
++        self._tautulli = None
++
+     async def clear_all(self) -> None:
+         """Clear all clients (call before reinitializing from database)."""
+         LOG.info("Clearing all clients")
+@@ -265,6 +302,7 @@ class ServiceManager:
+         await self.clear_radarr()
+         await self.clear_sonarr()
+         await self.clear_seerr()
++        await self.clear_tautulli()
+ 
+ 
+ # global manager instance
+diff --git a/backend/core/task_runtime.py b/backend/core/task_runtime.py
+index e8ca288..c96d1f5 100644
+--- a/backend/core/task_runtime.py
++++ b/backend/core/task_runtime.py
+@@ -18,6 +18,7 @@ from backend.tasks.sync import (
+     sync_linked_data,
+     sync_media,
+     sync_media_libraries,
++    sync_tautulli_watch_data,
+ )
+ from backend.types import MEDIA_SERVERS
+ 
+@@ -117,6 +118,9 @@ async def execute_task(task: Task) -> dict[str, Any] | None:
+     if task is Task.TAG_CLEANUP_CANDIDATES:
+         await tag_cleanup_candidates()
+         return
++    if task is Task.SYNC_TAUTULLI_WATCH_DATA:
++        await sync_tautulli_watch_data()
++        return
+     if task is Task.WEEKLY_HOUSE_KEEPING:
+         await weekly_house_keeping()
+         return
+diff --git a/backend/enums/media.py b/backend/enums/media.py
+index 69e5641..d6588b0 100644
+--- a/backend/enums/media.py
++++ b/backend/enums/media.py
+@@ -7,6 +7,7 @@ class Service(StrEnum):
+     JELLYFIN = auto()
+     PLEX = auto()
+     SEERR = auto()
++    TAUTULLI = auto()
+ 
+ 
+ class MediaType(StrEnum):
+diff --git a/backend/enums/tasks.py b/backend/enums/tasks.py
+index e6b78ff..33dadb3 100644
+--- a/backend/enums/tasks.py
++++ b/backend/enums/tasks.py
+@@ -52,6 +52,7 @@ class Task(StrEnum):
+     # manual only sync tasks (run only when manually triggered)
+     SYNC_MEDIA_LIBRARIES = auto()
+     SYNC_LINKED_DATA = auto()
++    SYNC_TAUTULLI_WATCH_DATA = auto()
+ 
+     # cleanup
+     SCAN_CLEANUP_CANDIDATES = auto()
+diff --git a/backend/tasks/sync.py b/backend/tasks/sync.py
+index 2a52246..39aaf84 100644
+--- a/backend/tasks/sync.py
++++ b/backend/tasks/sync.py
+@@ -43,6 +43,7 @@ __all__ = [
+     "resync_media",
+     "sync_media_libraries",
+     "sync_linked_data",
++    "sync_tautulli_watch_data",
+ ]
+ 
+ # number of records to process before committing to the database during sync tasks
+@@ -944,6 +945,11 @@ async def sync_media() -> dict[str, Any] | None:
+                 LOG.debug(f"Linked watch sync from {svr.service_type}")
+                 await sync_linked_data(svr.service_type)  # type: ignore[reportArgumentType]
+ 
++        # enrich watch data from Tautulli (if configured)
++        if service_manager.tautulli:
++            LOG.debug("Enriching watch data from Tautulli")
++            await sync_tautulli_watch_data()
++
+         return {"library_sync": library_sync_result}
+ 
+ 
+@@ -1202,3 +1208,127 @@ async def sync_media_libraries() -> dict[str, Any]:
+                 "libraries": current_libraries,
+                 "affected_rules": affected_rules,
+             }
++
++
++async def sync_tautulli_watch_data() -> None:
++    """
++    Enrich Movie and Series watch data (view_count, last_viewed_at, never_watched)
++    using Tautulli's playback history.  Tautulli typically has richer data than
++    Plex's built-in viewCount because it tracks every play event across all users.
++    """
++    tautulli = service_manager.tautulli
++    if not tautulli:
++        LOG.debug("No Tautulli service configured - skipping watch data sync")
++        return
++
++    async with track_task_execution(Task.SYNC_TAUTULLI_WATCH_DATA):
++        LOG.info("Syncing watch data from Tautulli...")
++
++        # fetch all movie history
++        movie_history = await tautulli.get_all_history(media_type="movie")
++        # fetch all episode history (aggregated to series level)
++        episode_history = await tautulli.get_all_history(media_type="episode")
++
++        # aggregate movie plays by rating_key → (play_count, last_played_timestamp)
++        movie_watch: dict[str, tuple[int, datetime | None]] = {}
++        for record in movie_history:
++            rk = str(record.get("rating_key", ""))
++            if not rk:
++                continue
++            ts = record.get("date") or record.get("started")
++            play_date: datetime | None = None
++            if ts:
++                try:
++                    play_date = datetime.fromtimestamp(int(ts), tz=timezone.utc)
++                except (ValueError, TypeError, OSError):
++                    pass
++            prev_count, prev_date = movie_watch.get(rk, (0, None))
++            new_count = prev_count + 1
++            if play_date and (prev_date is None or play_date > prev_date):
++                new_date = play_date
++            else:
++                new_date = prev_date
++            movie_watch[rk] = (new_count, new_date)
++
++        # aggregate episode plays to series level by grandparent_rating_key
++        series_watch: dict[str, tuple[int, datetime | None]] = {}
++        for record in episode_history:
++            rk = str(record.get("grandparent_rating_key", ""))
++            if not rk:
++                continue
++            ts = record.get("date") or record.get("started")
++            play_date: datetime | None = None  # noqa: F841
++            if ts:
++                try:
++                    play_date = datetime.fromtimestamp(int(ts), tz=timezone.utc)
++                except (ValueError, TypeError, OSError):
++                    pass
++            prev_count, prev_date = series_watch.get(rk, (0, None))
++            new_count = prev_count + 1
++            if play_date and (prev_date is None or play_date > prev_date):
++                new_date = play_date
++            else:
++                new_date = prev_date
++            series_watch[rk] = (new_count, new_date)
++
++        # update Movie rows where Tautulli has better data
++        if movie_watch:
++            async with async_db() as session:
++                # find movies whose versions have matching Plex rating keys
++                result = await session.execute(
++                    select(Movie, MovieVersion.service_item_id).join(
++                        MovieVersion, Movie.id == MovieVersion.movie_id
++                    )
++                )
++                updated = 0
++                for movie, service_item_id in result.all():
++                    if service_item_id not in movie_watch:
++                        continue
++                    tau_count, tau_lva = movie_watch[service_item_id]
++                    if tau_lva and tau_lva.tzinfo:
++                        tau_lva = tau_lva.replace(tzinfo=None)
++                    changed = False
++                    if tau_count > movie.view_count:
++                        movie.view_count = tau_count
++                        changed = True
++                    if tau_lva and (
++                        not movie.last_viewed_at or tau_lva > movie.last_viewed_at
++                    ):
++                        movie.last_viewed_at = tau_lva
++                        changed = True
++                    if changed:
++                        movie.never_watched = False
++                        updated += 1
++                await session.commit()
++                LOG.info(f"Updated watch data for {updated} movies from Tautulli")
++
++        # update Series rows
++        if series_watch:
++            async with async_db() as session:
++                # find series whose Plex service refs match
++                result = await session.execute(
++                    select(Series, SeriesServiceRef.service_id).join(
++                        SeriesServiceRef, Series.id == SeriesServiceRef.series_id
++                    )
++                )
++                updated = 0
++                for series, service_id in result.all():
++                    if service_id not in series_watch:
++                        continue
++                    tau_count, tau_lva = series_watch[service_id]
++                    if tau_lva and tau_lva.tzinfo:
++                        tau_lva = tau_lva.replace(tzinfo=None)
++                    changed = False
++                    if tau_count > series.view_count:
++                        series.view_count = tau_count
++                        changed = True
++                    if tau_lva and (
++                        not series.last_viewed_at or tau_lva > series.last_viewed_at
++                    ):
++                        series.last_viewed_at = tau_lva
++                        changed = True
++                    if changed:
++                        series.never_watched = False
++                        updated += 1
++                await session.commit()
++                LOG.info(f"Updated watch data for {updated} series from Tautulli")
+diff --git a/frontend/src/lib/types/shared.ts b/frontend/src/lib/types/shared.ts
+index fb7617d..db5b77a 100644
+--- a/frontend/src/lib/types/shared.ts
++++ b/frontend/src/lib/types/shared.ts
+@@ -38,6 +38,7 @@ export enum SettingsTab {
+   Radarr = "radarr",
+   Sonarr = "sonarr",
+   Seerr = "seerr",
++  Tautulli = "tautulli",
+   General = "general",
+   Tasks = "tasks",
+   BackgroundJobs = "background_jobs",
+diff --git a/frontend/src/routes/settings.svelte b/frontend/src/routes/settings.svelte
+index c8a5910..0a82650 100644
+--- a/frontend/src/routes/settings.svelte
++++ b/frontend/src/routes/settings.svelte
+@@ -23,6 +23,7 @@
+   import RadarrSVG from "$lib/components/svgs/RadarrSVG.svelte";
+   import SonarrSVG from "$lib/components/svgs/SonarrSVG.svelte";
+   import SeerrSVG from "$lib/components/svgs/SeerrSVG.svelte";
++  import TautulliSVG from "$lib/components/svgs/TautulliSVG.svelte";
+   import BookAlert from "@lucide/svelte/icons/book-alert";
+   import UserCog from "@lucide/svelte/icons/user-cog";
+   import Filter from "@lucide/svelte/icons/filter";
+@@ -61,6 +62,7 @@
+     SettingsTab.Radarr,
+     SettingsTab.Sonarr,
+     SettingsTab.Seerr,
++    SettingsTab.Tautulli,
+   ];
+ 
+   // organize tabs into groups
+@@ -96,6 +98,13 @@
+           baseUrlPlaceholder: "e.g. http://localhost:5055",
+           adminOnly: true,
+         },
++        {
++          id: SettingsTab.Tautulli,
++          label: "Tautulli",
++          icon: TautulliSVG,
++          baseUrlPlaceholder: "e.g. http://localhost:8181",
++          adminOnly: true,
++        },
+       ],
+     },
+     {
+@@ -187,6 +196,7 @@
+     [SettingsTab.Radarr]: emptyServiceState(),
+     [SettingsTab.Sonarr]: emptyServiceState(),
+     [SettingsTab.Seerr]: emptyServiceState(),
++    [SettingsTab.Tautulli]: emptyServiceState(),
+   });
+ 
+   // handler for service config changes (radarr/sonarr/seerr only)
