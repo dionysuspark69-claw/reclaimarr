@@ -9,14 +9,14 @@ A Python CLI tool to automatically manage disk space by intelligently deleting m
 - **Disk Space Management:** Automatically deletes media to keep disk usage below a configurable target percentage.
 - **Safety First:** Includes a `DRY_RUN` mode to preview deletions without affecting your files.
 - **Configurable:** Easily configure API endpoints, keys, and deletion thresholds via a `.env` file.
-- **Dockerized:** Comes with a `Dockerfile` and `docker-compose.yml` for easy, containerized deployment.
+- **Scheduled Runs:** Built-in cron scheduler to run automatically on a schedule.
 
-## Quick Start (Self-Hosting)
+## Quick Start
 
 ### Prerequisites
 
-- Python 3.12+
-- Docker and Docker Compose (for containerized deployment)
+- **Windows 10/11**
+- **Python 3.12+** ([Download from python.org](https://www.python.org/downloads/) — check "Add to PATH" during install)
 - Running instances of:
   - [Plex Media Server](https://www.plex.tv/)
   - [Tautulli](https://tautulli.com/) (for watch history tracking)
@@ -25,17 +25,22 @@ A Python CLI tool to automatically manage disk space by intelligently deleting m
 
 ### Step 1: Clone the Repository
 
-```bash
+```powershell
 git clone https://github.com/okhr/reclaimarr.git
 cd reclaimarr
 ```
 
-### Step 2: Run the Setup Wizard
+### Step 2: Install Dependencies
+
+```powershell
+pip install -r requirements.txt
+```
+
+### Step 3: Run the Setup Wizard
 
 The setup wizard will prompt you for each service's URL and API key, validate the connections, and generate a `.env` file.
 
-```bash
-pip install requests
+```powershell
 python setup.py
 ```
 
@@ -48,97 +53,40 @@ python setup.py
 | Radarr | Settings > General > API Key |
 | Sonarr | Settings > General > API Key |
 
-### Step 3: Deploy with Docker
-
-```bash
-docker-compose up -d
-```
-
-> **Note:** Edit `docker-compose.yml` to adjust the volume mount (`/srv/media:/media`) to match your media library's location on the host. The `docker-compose.yml` uses Docker-internal hostnames for service URLs (e.g., `http://plex:32400`). Your `.env` file provides the API keys via variable substitution. If running without Docker, the URLs in `.env` are used directly.
-
 ### Step 4: Verify with a Dry Run
 
-```bash
-docker-compose logs -f reclaimarr
-```
-
-By default, `DRY_RUN=true` so no files will be deleted. Review the logs to confirm Reclaimarr connects to all services and identifies media correctly. When satisfied, set `DRY_RUN=false` in your `.env` file and restart:
-
-```bash
-docker-compose restart reclaimarr
-```
-
-### Running Without Docker
-
-```bash
-pip install -r requirements.txt
+```powershell
 python -m src.main
 ```
 
-## Deployment
+By default, `DRY_RUN=true` so no files will be deleted. Review the output to confirm Reclaimarr connects to all services and identifies media correctly.
 
-Reclaimarr is designed to run as a long-running container with a built-in scheduler. The easiest way to deploy it is by adding it to your existing media stack's `docker-compose.yml`.
+When satisfied, open the `.env` file in a text editor, set `DRY_RUN=false`, and run again.
 
-### Docker Compose Example
+### Running on a Schedule
 
-Here is a sample `docker-compose.yml` configuration for Reclaimarr. You can add this service to your main compose file.
+Reclaimarr has a built-in scheduler. Set `CRON_SCHEDULE` in your `.env` file (e.g., `"0 3 * * *"` for 3 AM daily) and leave it running:
 
-```yaml
-version: '3.8'
-
-services:
-  reclaimarr:
-    image: ghcr.io/okhr/reclaimarr:latest
-    container_name: reclaimarr
-    restart: on-failure
-    environment:
-      # --- Required API Settings ---
-      # Assumes you are running Reclaimarr in the same Docker network as your other services.
-      - PLEX_URL=http://plex:32400
-      - PLEX_TOKEN=${PLEX_TOKEN}
-      - TAUTULLI_URL=http://tautulli:8181
-      - TAUTULLI_API_KEY=${TAUTULLI_API_KEY}
-      - RADARR_URL=http://radarr:7878
-      - RADARR_API_KEY=${RADARR_API_KEY}
-      - SONARR_URL=http://sonarr:8989
-      - SONARR_API_KEY=${SONARR_API_KEY}
-      
-      # --- Required Path ---
-      - MEDIA_PATH=/media
-
-      # --- Optional Settings ---
-      - TARGET_USAGE=80
-      - MIN_AGE_DAYS=90
-      - DRY_RUN=true
-      - VERBOSE=false
-      - CRON_SCHEDULE="0 3 * * *" # Runs every day at 3 AM. If blank, runs once.
-    volumes:
-      # Mount your media library. This path must match the one used by your other services.
-      # Example: /srv/media on your host machine.
-      - /srv/media:/media
+```powershell
+python -m src.main
 ```
 
-### Running the Service
+The process will stay alive and execute on schedule. To run it in the background on Windows, you can use **Task Scheduler**:
 
-The `restart: on-failure` policy is used to ensure the container behaves correctly in both modes:
-- **With `CRON_SCHEDULE`:** The container runs continuously as a service. If it ever crashes, Docker will restart it.
-- **Without `CRON_SCHEDULE`:** The script runs once and exits cleanly. The `on-failure` policy ensures Docker will **not** restart it, allowing it to act as a one-off task.
+1. Open Task Scheduler and create a new task
+2. Set the trigger to run at startup (or your preferred schedule)
+3. Set the action to run `python -m src.main` in the `reclaimarr` directory
+4. Under Settings, set "If the task is already running: Do not start a new instance"
 
-To start the service, create a `.env` file for your secrets (or run `python setup.py`) and run:
-```bash
-docker-compose up -d
-```
-The container will start in the background. You can view its logs with `docker-compose logs -f reclaimarr`.
+Alternatively, if `CRON_SCHEDULE` is left blank, the script will run once and exit.
 
 ### Important Considerations
 
 #### Network Shares and Snapshots
 
-If your media library is located on a network share (e.g., NFS, SMB) that uses a snapshotting filesystem like ZFS or Btrfs, you may encounter a situation where disk space is not immediately freed after files are deleted. This is because the deleted files are still held by recent snapshots.
+If your media library is located on a network share (e.g., SMB) that uses a snapshotting filesystem like ZFS or Btrfs, disk space may not be immediately freed after files are deleted because the deleted files are still held by recent snapshots.
 
-If Reclaimarr runs, deletes files, and then runs again before the snapshots containing those files have expired, it will see that the disk usage has not changed and may attempt to delete more content unnecessarily.
-
-**Recommendation:** Configure your `CRON_SCHEDULE` to run at an interval longer than your snapshot retention period. For example, if your snapshots are kept for 24 hours, set the cron schedule to run every 25 hours (`"0 */25 * * *"`) or once a day at a specific time to ensure the snapshots have been cleared.
+**Recommendation:** Configure your `CRON_SCHEDULE` to run at an interval longer than your snapshot retention period.
 
 ## Deletion Algorithm
 
@@ -157,19 +105,19 @@ All configuration is handled via the `.env` file. You can either run `python set
 ### Required API Settings
 ```
 # Plex
-PLEX_URL=http://your-plex-url:32400
+PLEX_URL=http://localhost:32400
 PLEX_TOKEN=your-plex-token
 
 # Tautulli
-TAUTULLI_URL=http://your-tautulli-url:8181
+TAUTULLI_URL=http://localhost:8181
 TAUTULLI_API_KEY=your-tautulli-api-key
 
 # Radarr
-RADARR_URL=http://your-radarr-url:7878
+RADARR_URL=http://localhost:7878
 RADARR_API_KEY=your-radarr-api-key
 
 # Sonarr
-SONARR_URL=http://your-sonarr-url:8989
+SONARR_URL=http://localhost:8989
 SONARR_API_KEY=your-sonarr-api-key
 ```
 
@@ -179,8 +127,8 @@ SONARR_API_KEY=your-sonarr-api-key
 TARGET_USAGE=80
 # The minimum age in days before a media item can be deleted.
 MIN_AGE_DAYS=90
-# The path to your media library inside the Docker container.
-MEDIA_PATH=/media
+# The path to your media library (e.g., D:\Media or \\server\media).
+MEDIA_PATH=D:\Media
 # Set to "true" to run in dry-run mode (no files deleted), or "false" to perform deletions.
 DRY_RUN=true
 # Set to "true" for verbose logging.
